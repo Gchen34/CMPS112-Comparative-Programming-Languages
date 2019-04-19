@@ -1,0 +1,36 @@
+head	1.1;
+access;
+symbols;
+locks;
+comment	@# @;
+
+
+1.1
+date	2018.10.26.01.31.45;	author -;	state -;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.1
+log
+@-
+@
+text
+@#!/bin/bash -x
+# $Id: runchecks,v 1.5 2018-10-25 18:31:33-07 - - $
+export PATH=$PATH:/afs/cats.ucsc.edu/courses/cmps112-wm/bin/
+checksource pmake >checksource.log 2>&1
+exec >check.log 2>&1
+PATH=$PATH:$(pwd)
+export PATH
+for dir in $(pwd)/test*
+do
+   cd $dir
+   pwd
+   sh Check
+done
+@

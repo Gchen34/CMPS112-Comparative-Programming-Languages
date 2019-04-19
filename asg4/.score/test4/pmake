@@ -1,0 +1,360 @@
+#!/usr/bin/perl
+# Justin Clark judclark@ucsc.edu
+# Guangyang Chen gchen34@ucsc.edu
+
+use strict;
+use warnings;
+use Getopt::Std;
+use Data::Dumper;
+use POSIX qw(strftime);
+
+require 5.013002;
+
+my $filename = "Makefile";
+
+open(my $lines,  "<",  "Makefile")  or die "Can't open Makefile: $!";
+
+my @words;
+my %cmd = ();
+my %line_num;
+my %macros;
+my %prereq;
+my $my_target;
+my $size = $#ARGV + 1;
+my $first_target = "999";
+my @latest_targets;
+my $debug = 0;
+
+sub parse_dep ($) {
+   my ($line) = @_;
+   return undef unless $line =~ m/^(\S+)\s*:\s*(.*?)\s*$/;
+   my ($target, $dependency) = ($1, $2);
+   my @dependencies = split m/\s+/, $dependency;
+   return $target, \@dependencies;
+}
+# $string =~ s/regex/replacement/g;
+sub oneMacroToValue {
+    my $value = $_[0];
+    if ($value =~ /\$\{\s*\w*\s*\}/) {
+        # $value =~ s/\$\{\s*\w*\s*\}/\s*\w*\s*\//g;
+
+        # my @str_val = split("{", $value);
+
+        # $value = join("", $str_val[1]);
+        # @str_val = split("}", $value);
+        # $value = join("", $str_val[0]);
+        # $value = substr $value, 0, length($value);
+
+        my $valLength = length($value);
+        $valLength = $valLength - 3;
+        my $macroName = substr $value, 2, $valLength;
+        
+        my @macroVals = @{$macros{$macroName}};
+
+        return @macroVals;
+    }
+    return ($value);
+} 
+
+sub replaceMacros {
+    my %hash = @_;
+    for my $key (keys %hash) {
+        my @values = @{${hash{$key}}};
+        my $index = 0;
+        foreach my $value (@values) {
+            if ($value =~ /\$\{\s*\w*\s*\}/) {
+                my $valLength = length($value);
+                $valLength = $valLength - 3;
+                my $macroName = substr $value, 2, $valLength;
+                
+                my @macroVals = @{$macros{$macroName}};
+
+                splice @{ $hash{$key} }, $index, 1;
+                $index = $index - 1;
+                for my $macroVal (@macroVals) {
+                    push @{ $hash{$key} }, $macroVal;
+                }
+            }  elsif ($value =~ /\${2}/) {
+
+                my @value_array = split("\\\$", $value);
+                $value = 
+                (substr $value_array[0], 
+                0, length($value_array[0])) . "\$" . $value_array[2];
+
+                splice @{ $hash{$key} }, $index, 1;
+                $index = $index - 1;
+
+                push @{ $hash{$key} }, $value;
+            }
+            $index = $index + 1;
+        }
+    }
+}
+
+sub update_prereq {
+    while  (my $line = <$lines>) {
+        my $firstChar = substr $line, 0, 1;
+        if ($firstChar eq '	') {
+            $line =~ s/^\s*(.*?)\s*$/$1/;
+
+            for my $latest_target (@latest_targets) {
+                my @latest_target_tests = split(" ", $line);
+                my @final = ();
+                for my $latest_target_test (@latest_target_tests) {
+                    if ($latest_target_test eq '$<') {
+                        push @final, $prereq{$latest_target}->[0];
+                    } else {
+                        push @final, $latest_target_test;
+                    }
+                }
+
+                my $final_line = join(" ", @final);
+
+                if (exists $cmd{$latest_target}) {
+                    push @{ $cmd{$latest_target} }, $final_line;
+                } else {
+                    @{ $cmd{$latest_target}} = ($final_line);
+                }
+            }
+            $line_num{$line} = $.;
+        }
+        elsif ($line =~ /\w+\s*=.+\w+/) {
+            my @key_values = split "=", $line;
+            my @values = split " ", $key_values[1];
+            for my $value (@values) {
+                $key_values[0] =~ s/^\s+|\s+$//g;
+                if (exists $macros{$key_values[0]}) {
+                    push @{ $macros{$key_values[0]} }, $value;
+                } else {
+                    @{ $macros{$key_values[0]}} = ($value);
+                }
+            }
+        }
+        elsif (!($firstChar eq "#" || $line =~ /^\s*$/)) {
+            my ($target, $deps_1) = parse_dep $line;
+            my @files;
+
+            my $firstChar = substr $target, 0, 1; 
+            if ($firstChar eq "%") {
+                my $extension = $deps_1->[0];
+                $extension = substr $extension, 1;
+                @files = glob("*$extension");
+
+                # print "FILES: @files\n";
+                @latest_targets = ();
+                for my $file (@files) {
+                    if ($extension eq ".c") {
+                        my $dotOh = substr $file, 0, length($file)-2;
+                        @{$prereq{"$dotOh.o"}} = ($file);
+                        push @latest_targets, "$dotOh.o";
+                    } else {
+                        my $dotOh = substr $file, 0, length($file)-5;
+                        @{$prereq{"$dotOh.class"}} = ($file);
+                        push @latest_targets, "$dotOh.class";
+                    }
+                }
+
+                if ($first_target eq "999") {
+                    $first_target = $latest_targets[0];
+                }
+            } else {
+                my @return_value = oneMacroToValue $target;
+                $target = $return_value[0];
+
+                if ($first_target eq "999") {
+                    $first_target = $target;
+                }
+                @latest_targets = ();
+                push @latest_targets, $target;
+                print "$0: syntax error: $line\n" 
+                and next unless defined $target;
+                $prereq{$target} = $deps_1;
+            }
+
+        }
+    }
+    return %prereq;
+}
+
+sub mtime ($) {
+    my ($filename) = @_;
+    my @stat = stat $filename;
+    return @stat ? $stat[9] : undef;
+}
+
+sub fileinfo ($) {
+    my ($filename) = @_;
+    my $mtime = mtime $filename;
+    print "$filename: ";
+    if (defined $mtime) {print strftime "%c\n", localtime $mtime}
+    else {print "$!\n"}
+    return $mtime;
+}
+
+my %target_timestamps;
+for my $key (keys %cmd) {
+    if ($key =~ /\.o/ || $key =~ /\.class/) {
+        target_timestamps{$key} = 0;
+        # print "KEYS:$key\n";
+    }
+}
+
+update_prereq;
+
+replaceMacros (%macros);
+
+sub update_cmd {
+    %cmd = @_;
+
+    for my $key (keys %cmd) {
+        my @functions = @{$cmd{$key}};
+
+        my $counter = 0;
+        for my $function (@functions) {
+            my @line_array = split " ", $function;
+                    
+            my @temp_array;
+
+            for my $word (@line_array) {
+                my $tempStr = substr $word, 0, 3;
+                my $temp;
+                if ($tempStr =~ /\.\/\$/) {
+                    $tempStr = substr $word, 2, length($word);
+                    my @return_value = oneMacroToValue $tempStr;
+                    $temp = join(" ", @return_value);
+                    $temp = (substr $word, 0, 2) . $temp;
+                }
+                else {
+                    my @return_value = oneMacroToValue $word;
+                    $temp = join(" ", @return_value);
+                }
+                #print "TEMP: $temp\n";
+                push @temp_array, $temp;
+            }
+
+            my $new_function = join(" ", @temp_array);
+            ${cmd{$key}}[$counter] = ($new_function);
+
+            if ($new_function ne $function) {
+                # print "TEST1: $function\n";
+                # print "TEST2: $line_num{$function}\n\n";
+                $line_num{$new_function} = $line_num{$function};
+            }
+            $counter = $counter + 1;
+        }
+    }
+}
+
+update_cmd (%cmd);
+
+if ($size eq 2) {
+    $my_target = $ARGV[1];
+    $debug = 1;
+}
+elsif ($size eq 1) {
+    if ($ARGV[0] eq "-d") {
+        $my_target = $first_target;
+        $debug = 1;
+    } else {
+        $my_target = $ARGV[0];
+    }
+} 
+elsif ($size eq 0) {
+    $my_target = $first_target;
+} 
+else {
+    print "ERROR";
+    exit;
+}
+
+my $nada = 0;
+
+targetFunction($my_target);
+
+sub targetFunction {
+    my $trget = $_[0];
+
+    my $counter = -1;
+    my $target_file = 0;
+    if (-e $trget) {
+        $target_file = 1;
+    } else {
+        $counter = -2;
+    }
+
+    for my $prereq (@{ $prereq{$trget} }) {
+
+        my @return_values = oneMacroToValue $prereq;
+        for my $return_value (@return_values) {
+            if (-e ${return_value}) {
+                my $exit_status;
+                if ($target_file == 1) {
+                    my $prereq_timestamp = mtime $return_value;
+                    my $target_timestamp = mtime $trget;
+                    if ($target_timestamp > $prereq_timestamp) {
+                        if ($counter == -1) {
+                            $counter = 0;
+                        }
+                        $counter ++;
+                        next;
+                    }
+                }
+            } else {
+                targetFunction($return_value);
+            }
+        }
+
+    }
+
+
+
+    # check timestamp
+
+    my $error_signal = 0;
+    my $line_num = 0;
+    my $is_minus = 0;
+
+
+    if ($counter == -2) {
+        for my $command (@{ $cmd{$trget}}) {
+            $nada = 1;
+
+            my $firstChar = substr $command, 0, 1;
+            my $function = substr $command, 2;
+
+            if ($firstChar eq '-') {
+                print "$function\n";
+                system($function);
+                $is_minus = 1;
+            }
+            elsif ($firstChar eq '@') {
+                system($function);
+            } else {
+                print "$command\n";
+                system "$command";
+            }
+
+            my $term_signal = $? & 127;
+            my $core_dumped = $? & 0x80;
+            my $exit_status = ($? >> 8) & 0xFF;
+
+            if ($exit_status != 0 and $error_signal == 0) {
+                $error_signal = $? >> 8;
+                $line_num = $.;
+            }
+            if ($exit_status != 0) {
+                if ($is_minus == 1) {
+                print "make: [Makefile:$line_num{$command}: $trget] Error $error_signal (ignored)\n";
+                } else {
+                    print "make: *** [Makefile:$line_num{$command}: $trget] Error $error_signal\n";
+                    exit 1;
+                }
+            }
+        }
+        if ($nada == 0) {
+            print "make: Nothing to be done for '$trget'.\n";
+        }
+    } else {
+        print "make: '$trget' is up to date.\n";
+    }
+}

@@ -1,0 +1,3 @@
+checksource: missing newline at end of line
+   file "README": 1 errors: line 22
+checksource: TOTAL COMPLAINTS: 1

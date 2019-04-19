@@ -1,0 +1,4 @@
+rm main.o hello.o
+rm hello
+rm: 无法删除"hello": 没有那个文件或目录
+make: [Makefile:30: spotless] Error 1 (ignored)
